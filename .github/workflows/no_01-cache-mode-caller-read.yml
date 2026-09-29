@@ -1,0 +1,98 @@
+name: no_01 cache mode reusable caller
+
+on:
+  workflow_dispatch:
+    inputs:
+      cache_key_prefix:
+        description: Unique prefix for the three cache probes
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  direct-read-control:
+    runs-on: ubuntu-latest
+    cache-mode: read
+    steps:
+      - name: Prove a direct read-mode job cannot create a cache
+        uses: actions/github-script@v8
+        env:
+          NO_01_CACHE_KEY: ${{ inputs.cache_key_prefix }}-direct-read
+        with:
+          script: |
+            const crypto = require('crypto')
+            const key = process.env.NO_01_CACHE_KEY
+            const version = crypto.createHash('sha256')
+              .update('no_01-cache-mode-reusable-v1').digest('hex')
+            const endpoint = new URL(
+              '/twirp/github.actions.results.api.v1.CacheService/CreateCacheEntry',
+              process.env.ACTIONS_RESULTS_URL)
+            const response = await fetch(endpoint, {
+              method: 'POST',
+              headers: {
+                authorization: `Bearer ${process.env.ACTIONS_RUNTIME_TOKEN}`,
+                'content-type': 'application/json'
+              },
+              body: JSON.stringify({key, version})
+            })
+            const body = await response.json()
+            const proof = {
+              mode: process.env.ACTIONS_CACHE_MODE || '',
+              status: response.status,
+              ok: Boolean(body.ok),
+              upload_url_present: Boolean(body.signed_upload_url),
+              message: body.message || ''
+            }
+            core.info(`NO_01_DIRECT_READ=${JSON.stringify(proof)}`)
+            if (proof.ok || proof.upload_url_present) {
+              throw new Error('read-mode control received cache write access')
+            }
+
+  direct-write-control:
+    runs-on: ubuntu-latest
+    cache-mode: write
+    steps:
+      - name: Prove the same request works with write mode
+        uses: actions/github-script@v8
+        env:
+          NO_01_CACHE_KEY: ${{ inputs.cache_key_prefix }}-direct-write
+        with:
+          script: |
+            const crypto = require('crypto')
+            const key = process.env.NO_01_CACHE_KEY
+            const version = crypto.createHash('sha256')
+              .update('no_01-cache-mode-reusable-v1').digest('hex')
+            const endpoint = new URL(
+              '/twirp/github.actions.results.api.v1.CacheService/CreateCacheEntry',
+              process.env.ACTIONS_RESULTS_URL)
+            const response = await fetch(endpoint, {
+              method: 'POST',
+              headers: {
+                authorization: `Bearer ${process.env.ACTIONS_RUNTIME_TOKEN}`,
+                'content-type': 'application/json'
+              },
+              body: JSON.stringify({key, version})
+            })
+            const body = await response.json()
+            const proof = {
+              mode: process.env.ACTIONS_CACHE_MODE || '',
+              status: response.status,
+              ok: Boolean(body.ok),
+              upload_url_present: Boolean(body.signed_upload_url),
+              upload_url_hash: body.signed_upload_url
+                ? crypto.createHash('sha256').update(body.signed_upload_url).digest('hex')
+                : '',
+              message: body.message || ''
+            }
+            core.info(`NO_01_DIRECT_WRITE=${JSON.stringify(proof)}`)
+            if (!proof.ok || !proof.upload_url_present) {
+              throw new Error('write-mode control did not receive cache write access')
+            }
+
+  call-write-callee:
+    cache-mode: read
+    uses: ./.github/workflows/no_01-cache-mode-callee-write.yml
+    with:
+      cache_key: ${{ inputs.cache_key_prefix }}-callee-write
